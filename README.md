@@ -24,6 +24,14 @@ cmake --build build --parallel
 ./build/UAM-Simulator-Modern
 ```
 
+If `map/hh_clip.obj` and `map/hh_clip.mtl` are not tracked locally, regenerate them before running:
+
+```sh
+./.venv/bin/python map/extract_clip.py --full-tile
+```
+
+That export depends on the local CityGML data under `map/LoD3-HH_Area4_2024_10_10/`, which is intentionally git-ignored.
+
 
 ## Controls
 

@@ -88,6 +88,16 @@
 			"isBackground": false
 		},
 		{
+			"label": "Extract HH Clip",
+			"type": "shell",
+			"command": "./.venv/bin/python",
+			"args": [
+				"map/extract_clip.py",
+				"--full-tile"
+			],
+			"isBackground": false
+		},
+		{
 			"label": "Build Current",
 			"type": "shell",
 			"command": "cmake",
