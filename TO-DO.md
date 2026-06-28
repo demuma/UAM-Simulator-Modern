@@ -1,0 +1,25 @@
+# To-Do List
+
+- should have "unlimited" range and not cut of buildings at certain range ✅
+- LIDAR should interact with 3D model environment ✅
+- RADAR should interact with 3D model environment ✅
+- real collision with environment ✅
+- coordinate system for 3D model environment corresponding with true coordinates of the tile (= world coordinate system) ✅
+- relative coordinates of the drone in respect to the world coordinate system ✅
+- drone should fly between two set coordinates ✅
+- multiple drones should fly in the simulation ✅
+- add camera ✅
+- add radar ✅
+- write out sensor data (lidar_output, radar_output, camera_output) ✅
+- display the current drone mode ✅
+- display drone states (position, velocity, direction, trajectory, type) ✅
+- display the simulation infos ✅
+- add texture to 3D environment model ✅
+- add sun and directional shading ✅
+- add cast shadows / shadow map ✅
+- add ground surface that fills up the space between ground and bottom of buildings ✅
+- add noise to sensor
+- improve radar model/method
+- make a more common lidar file format with common attributes
+- add extrinsic calibration parameters for sensors
+- add coordinate system corresponding with the real coordinates of the tile

@@ -1,0 +1,27 @@
+{
+    "configurations": [
+        {
+            "name": "Apple Silicon",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/include/**",
+                "${workspaceFolder}/src/**",
+                "/usr/local/include/bsoncxx/v_noabi",
+                "/usr/local/include/mongocxx/v_noabi",
+                "/opt/homebrew/opt/sfml/include",
+                "/opt/homebrew/opt/yaml-cpp/include",
+                "/opt/homebrew/opt/glm/include",
+                "/opt/homebrew/opt/glew/include"
+            ],
+            "defines": [],
+            "macFrameworkPath": [
+                "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks"
+            ],
+            "compilerPath": "/usr/bin/clang++",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "macos-clang-arm64"
+        }
+    ],
+    "version": 4
+}

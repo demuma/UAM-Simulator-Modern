@@ -1,0 +1,10 @@
+build/
+.venv/
+.DS_Store
+camera_output/
+lidar_output/
+radar_output/
+map/LoD3-HH_Area*/
+map/**/images_upscaled_x*/
+map/tile006-006-3dtiles/
+map/_analyze/
