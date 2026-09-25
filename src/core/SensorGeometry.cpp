@@ -27,14 +27,17 @@ bool rayBounds(const glm::vec3& ro, const glm::vec3& rd, const glm::vec3& mn, co
     float tmax = tMax;
     for (int i = 0; i < 3; ++i) {
         float d = rd[i];
-        if (std::abs(d) < 1e-6f) d = d < 0.0f ? -1e-6f : 1e-6f;
+        if (d == 0.0f) {
+            if (ro[i] < mn[i] || ro[i] > mx[i]) return false;
+            continue;
+        }
         float invD = 1.0f / d;
         float t0 = (mn[i] - ro[i]) * invD;
         float t1 = (mx[i] - ro[i]) * invD;
         if (invD < 0.0f) std::swap(t0, t1);
         tmin = std::max(tmin, t0);
         tmax = std::min(tmax, t1);
-        if (tmax <= tmin) return false;
+        if (tmax < tmin) return false;
     }
     return true;
 }
@@ -161,7 +164,9 @@ SensorGeometry::RayHit SensorGeometry::raycast(const glm::vec3& origin, const gl
     RayHit best{false, maxRange, -1};
     if (bvh_.empty()) return best;
 
-    std::vector<int> stack;
+    // Reuse traversal storage per worker without sharing mutable state between threads.
+    thread_local std::vector<int> stack;
+    stack.clear();
     stack.reserve(64);
     stack.push_back(0);
     while (!stack.empty()) {

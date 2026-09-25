@@ -14,7 +14,7 @@ This is intentionally not a line-by-line port of the old `src/main.cpp`. The old
 ## Build
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
@@ -23,6 +23,8 @@ cmake --build build --parallel
 ```sh
 ./build/UAM-Simulator-Modern
 ```
+
+Use Release for interactive sensor runs. Unoptimized Debug builds make the CPU BVH scans substantially slower. In VS Code, the default build task is Build Release; select the Run launch configuration for an optimized build. Debug remains available for stepping through code.
 
 If `map/hh_clip.obj` and `map/hh_clip.mtl` are not tracked locally, regenerate them before running:
 
@@ -37,7 +39,7 @@ That export depends on the local CityGML data under `map/LoD3-HH_Area4_2024_10_1
 
 - `Esc`: quit
 - `Tab`: switch active/followed sensor drone
-- `M`: toggle manual mode for the selected drone
+- `M`: toggle manual mode for the selected drone (enabling it enters follow view)
 - `V`: toggle selected-drone onboard camera
 - `P`: toggle bottom-right selected-drone camera viewport
 - `O`: toggle selected-drone camera PNG recording
@@ -47,6 +49,7 @@ That export depends on the local CityGML data under `map/LoD3-HH_Area4_2024_10_1
 - `W/A/S/D`: move free camera, or move selected drone in manual mode
 - `Space` / `C`: move free camera up/down, or move selected drone up/down in manual mode
 - `Arrow keys`: rotate camera
+- Left or right mouse drag: rotate the free/follow camera; onboard view stays fixed to the drone
 - `Q/E`: rotate camera, or yaw selected drone in manual mode
 
 ## Sensor frame export
@@ -54,6 +57,8 @@ That export depends on the local CityGML data under `map/LoD3-HH_Area4_2024_10_1
 - `L` writes LiDAR YAML frames to `lidar_output`.
 - `R` writes RADAR YAML frames to `radar_output` with range, azimuth, elevation, SNR, object ID, and relative radial velocity.
 - `O` writes selected-drone camera PNG frames to `camera_output`; PiP preview alone does not record frames.
+
+LiDAR scans and YAML export run on a background worker using a snapshot of drone poses. Only one scan runs at a time; when processing cannot keep up, the scan rate falls instead of queuing work and freezing controls. Displayed points describe the captured pose, not the current pose of a moving target. Disabling LiDAR lets an already-started export finish.
 
 ## Rendering notes
 
@@ -65,6 +70,9 @@ That export depends on the local CityGML data under `map/LoD3-HH_Area4_2024_10_1
 - Free camera mode inherits the current view pose when leaving follow/onboard mode, so drone selection does not reset the camera.
 - Follow camera is intentionally closer to the lead drone for inspecting the model.
 - Static grid geometry is kept in a persistent Metal buffer instead of being rebuilt each frame.
+- LiDAR point buffers are uploaded only when a scan completes. Points are 2 pixels in the main view and 1 pixel in the camera preview/output.
+- Draw uniforms are copied into Metal commands so overlapping frames cannot overwrite each other's transforms or point sizes.
+- Both Objective-C++ files use ARC so temporary images and replaced Metal resources are released.
 - HUD overlay reports selected drone mode, camera mode, LiDAR/RADAR state, position, velocity, yaw, and FPS.
 
 ## Direction

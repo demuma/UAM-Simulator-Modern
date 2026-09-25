@@ -18,6 +18,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iomanip>
 #include <sstream>
 #include <glm/gtc/matrix_transform.hpp>
@@ -284,27 +285,18 @@ static matrix_float4x4 identityMatrix() {
     return matrix_identity_float4x4;
 }
 
-static constexpr NSUInteger kUniformStride = 256;
-static constexpr NSUInteger kMaxUniformDraws = 256;
 static constexpr NSUInteger kShadowMapSize = 2048;
 static constexpr vector_float3 kSunDirection = vector_float3{-0.45f, 0.82f, -0.35f};
 
-static void setUniforms(id<MTLBuffer> uniformBuffer,
-                        NSUInteger& uniformCursor,
-                        id<MTLRenderCommandEncoder> encoder,
+static void setUniforms(id<MTLRenderCommandEncoder> encoder,
                         matrix_float4x4 viewProjection,
                         matrix_float4x4 model,
                         float pointSize = 5.0f,
                         matrix_float4x4 lightViewProjection = matrix_identity_float4x4,
                         float shadowStrength = 0.0f) {
-    if (!uniformBuffer) return;
-    if (uniformCursor >= kMaxUniformDraws) uniformCursor = 0;
-
     MetalUniforms uniforms{viewProjection, model, lightViewProjection, pointSize, shadowStrength};
-    NSUInteger offset = uniformCursor * kUniformStride;
-    std::memcpy(static_cast<char*>([uniformBuffer contents]) + offset, &uniforms, sizeof(MetalUniforms));
-    [encoder setVertexBuffer:uniformBuffer offset:offset atIndex:1];
-    ++uniformCursor;
+    // Metal copies these bytes, so subsequent frames cannot overwrite an in-flight draw.
+    [encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:1];
 }
 
 
@@ -487,22 +479,18 @@ static uam::SceneMesh makeGroundFillMesh(const uam::SceneMesh& cityMesh) {
     return mesh;
 }
 
-static void drawMeshWithModel(id<MTLBuffer> uniformBuffer,
-                              NSUInteger& uniformCursor,
-                              id<MTLRenderCommandEncoder> encoder,
+static void drawMeshWithModel(id<MTLRenderCommandEncoder> encoder,
                               const MetalMesh& mesh,
                               matrix_float4x4 viewProjection,
                               const glm::mat4& model,
                               matrix_float4x4 lightViewProjection = matrix_identity_float4x4,
                               float shadowStrength = 0.0f) {
     if (!mesh.valid()) return;
-    setUniforms(uniformBuffer, uniformCursor, encoder, viewProjection, toMetalMatrix(model), 5.0f, lightViewProjection, shadowStrength);
+    setUniforms(encoder, viewProjection, toMetalMatrix(model), 5.0f, lightViewProjection, shadowStrength);
     mesh.draw(encoder);
 }
 
-static void drawDroneModel(id<MTLBuffer> uniformBuffer,
-                           NSUInteger& uniformCursor,
-                           id<MTLRenderCommandEncoder> encoder,
+static void drawDroneModel(id<MTLRenderCommandEncoder> encoder,
                            const DroneRenderModel& model,
                            const uam::Drone& drone,
                            float propAngle,
@@ -511,7 +499,7 @@ static void drawDroneModel(id<MTLBuffer> uniformBuffer,
                            float shadowStrength = 0.0f) {
     if (!model.loaded()) return;
 
-    drawMeshWithModel(uniformBuffer, uniformCursor, encoder, model.body, viewProjection, droneBodyTransform(drone), lightViewProjection, shadowStrength);
+    drawMeshWithModel(encoder, model.body, viewProjection, droneBodyTransform(drone), lightViewProjection, shadowStrength);
 
     const auto props = dronePropTransforms(drone, propAngle);
     const glm::mat4& fl = props[0];
@@ -519,15 +507,15 @@ static void drawDroneModel(id<MTLBuffer> uniformBuffer,
     const glm::mat4& rl = props[2];
     const glm::mat4& rr = props[3];
 
-    drawMeshWithModel(uniformBuffer, uniformCursor, encoder, model.propFL, viewProjection, fl, lightViewProjection, shadowStrength);
-    drawMeshWithModel(uniformBuffer, uniformCursor, encoder, model.propRR, viewProjection, rr, lightViewProjection, shadowStrength);
-    drawMeshWithModel(uniformBuffer, uniformCursor, encoder, model.propFR, viewProjection, fr, lightViewProjection, shadowStrength);
-    drawMeshWithModel(uniformBuffer, uniformCursor, encoder, model.propRL, viewProjection, rl, lightViewProjection, shadowStrength);
+    drawMeshWithModel(encoder, model.propFL, viewProjection, fl, lightViewProjection, shadowStrength);
+    drawMeshWithModel(encoder, model.propRR, viewProjection, rr, lightViewProjection, shadowStrength);
+    drawMeshWithModel(encoder, model.propFR, viewProjection, fr, lightViewProjection, shadowStrength);
+    drawMeshWithModel(encoder, model.propRL, viewProjection, rl, lightViewProjection, shadowStrength);
 
-    drawMeshWithModel(uniformBuffer, uniformCursor, encoder, model.propSweep, viewProjection, fl, lightViewProjection, shadowStrength);
-    drawMeshWithModel(uniformBuffer, uniformCursor, encoder, model.propSweep, viewProjection, rr, lightViewProjection, shadowStrength);
-    drawMeshWithModel(uniformBuffer, uniformCursor, encoder, model.propSweep, viewProjection, fr, lightViewProjection, shadowStrength);
-    drawMeshWithModel(uniformBuffer, uniformCursor, encoder, model.propSweep, viewProjection, rl, lightViewProjection, shadowStrength);
+    drawMeshWithModel(encoder, model.propSweep, viewProjection, fl, lightViewProjection, shadowStrength);
+    drawMeshWithModel(encoder, model.propSweep, viewProjection, rr, lightViewProjection, shadowStrength);
+    drawMeshWithModel(encoder, model.propSweep, viewProjection, fr, lightViewProjection, shadowStrength);
+    drawMeshWithModel(encoder, model.propSweep, viewProjection, rl, lightViewProjection, shadowStrength);
 }
 
 static bool rayAabb(const glm::vec3& ro, const glm::vec3& rd, const glm::vec3& mn, const glm::vec3& mx, float tMax) {
@@ -745,12 +733,15 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
 @implementation InputMetalView
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)canBecomeKeyView { return YES; }
+- (BOOL)acceptsFirstMouse:(NSEvent*)event { (void)event; return YES; }
 @end
 
 @interface Renderer : NSObject <MTKViewDelegate>
 - (instancetype)initWithView:(MTKView*)view;
 - (void)handleKeyDown:(NSEvent*)event;
 - (void)handleKeyUp:(NSEvent*)event;
+- (void)handleMouseDragged:(NSEvent*)event;
+- (void)resetInput;
 @end
 
 @implementation Renderer {
@@ -764,8 +755,6 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
     id<MTLTexture> _shadowDepthTexture;
     id<MTLSamplerState> _defaultSampler;
     id<MTLSamplerState> _shadowSampler;
-    id<MTLBuffer> _uniformBuffer;
-    NSUInteger _uniformCursor;
     id<MTLBuffer> _gridBuffer;
     NSUInteger _gridVertexCount;
     id<MTLBuffer> _insetBackgroundBuffer;
@@ -791,6 +780,10 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
     int _radarFrameId;
     int _cameraFrameId;
     std::vector<uam::LidarHit> _lastLidarHits;
+    std::future<std::vector<uam::LidarHit>> _lidarTask;
+    unsigned _lidarGeneration;
+    unsigned _lidarTaskGeneration;
+    id<MTLBuffer> _lidarBuffer;
     std::vector<RadarDetection> _lastRadarDetections;
     std::vector<MetalVertex> _lidarPointVertices;
     std::vector<MetalVertex> _radarPointVertices;
@@ -801,6 +794,8 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
     unsigned _cameraOutputHeight;
     id _keyDownMonitor;
     id _keyUpMonitor;
+    id _mouseMonitor;
+    id _focusObserver;
     std::array<bool, 256> _keys;
     bool _followDrone;
     vector_float3 _cameraPos;
@@ -845,9 +840,6 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
     defaultSamplerDesc.sAddressMode = MTLSamplerAddressModeRepeat;
     defaultSamplerDesc.tAddressMode = MTLSamplerAddressModeRepeat;
     _defaultSampler = [_device newSamplerStateWithDescriptor:defaultSamplerDesc];
-    _uniformBuffer = [_device newBufferWithLength:kUniformStride * kMaxUniformDraws
-                                          options:MTLResourceStorageModeShared];
-    _uniformCursor = 0;
     _gridBuffer = nil;
     _gridVertexCount = 0;
     _insetBackgroundBuffer = nil;
@@ -1111,12 +1103,28 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
 
     __weak Renderer* weakSelf = self;
     _keyDownMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent*(NSEvent* event) {
+        if (event.window != view.window || !event.window.isKeyWindow || (event.modifierFlags & NSEventModifierFlagCommand)) return event;
         [weakSelf handleKeyDown:event];
         return nil;
     }];
     _keyUpMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyUp handler:^NSEvent*(NSEvent* event) {
+        if (event.window != view.window) return event;
         [weakSelf handleKeyUp:event];
         return nil;
+    }];
+    _mouseMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:(NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskLeftMouseDragged | NSEventMaskRightMouseDragged)
+                                                       handler:^NSEvent*(NSEvent* event) {
+        if (event.window != view.window || !event.window.isKeyWindow) return event;
+        [view.window makeFirstResponder:view];
+        if (event.type == NSEventTypeLeftMouseDragged || event.type == NSEventTypeRightMouseDragged) {
+            [weakSelf handleMouseDragged:event];
+            return nil;
+        }
+        return event;
+    }];
+    _focusObserver = [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidResignKeyNotification
+                                                                      object:nil queue:nil usingBlock:^(NSNotification* note) {
+        if (note.object == view.window) [weakSelf resetInput];
     }];
 
     _hudLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(14.0, view.bounds.size.height - 170.0, 390.0, 150.0)];
@@ -1142,8 +1150,12 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
 }
 
 - (void)dealloc {
+    // The worker borrows immutable geometry; join before those C++ members are destroyed.
+    if (_lidarTask.valid()) _lidarTask.wait();
     if (_keyDownMonitor) [NSEvent removeMonitor:_keyDownMonitor];
     if (_keyUpMonitor) [NSEvent removeMonitor:_keyUpMonitor];
+    if (_mouseMonitor) [NSEvent removeMonitor:_mouseMonitor];
+    if (_focusObserver) [[NSNotificationCenter defaultCenter] removeObserver:_focusObserver];
 }
 
 - (void)currentViewEye:(vector_float3*)eye target:(vector_float3*)target {
@@ -1206,7 +1218,7 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
               primitiveType:(MTLPrimitiveType)primitiveType
                  encoder:(id<MTLRenderCommandEncoder>)enc {
     if (!buffer || vertexCount == 0) return;
-    setUniforms(_uniformBuffer, _uniformCursor, enc, identityMatrix(), identityMatrix());
+    setUniforms(enc, identityMatrix(), identityMatrix());
     [enc setVertexBuffer:buffer offset:0 atIndex:0];
     [enc drawPrimitives:primitiveType vertexStart:0 vertexCount:vertexCount];
 }
@@ -1222,7 +1234,7 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
             lightViewProjection:(matrix_float4x4)lightViewProjection
                   shadowStrength:(float)shadowStrength
              skipSelectedDrone:(BOOL)skipSelectedDrone {
-    setUniforms(_uniformBuffer, _uniformCursor, enc, viewProjection, identityMatrix(), 5.0f, lightViewProjection, shadowStrength);
+    setUniforms(enc, viewProjection, identityMatrix(), 5.0f, lightViewProjection, shadowStrength);
 
     if (_gridBuffer) {
         [enc setVertexBuffer:_gridBuffer offset:0 atIndex:0];
@@ -1237,17 +1249,17 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
     if (_droneModel.loaded()) {
         for (std::size_t i = 0; i < _sim.drones().size(); ++i) {
             if (skipSelectedDrone && i == _selectedDrone) continue;
-            drawDroneModel(_uniformBuffer, _uniformCursor, enc, _droneModel, _sim.drones()[i], _propAngle, viewProjection, lightViewProjection, shadowStrength);
+            drawDroneModel(enc, _droneModel, _sim.drones()[i], _propAngle, viewProjection, lightViewProjection, shadowStrength);
         }
-        setUniforms(_uniformBuffer, _uniformCursor, enc, viewProjection, identityMatrix(), 5.0f, lightViewProjection, shadowStrength);
+        setUniforms(enc, viewProjection, identityMatrix(), 5.0f, lightViewProjection, shadowStrength);
     }
     if (lidarBuffer && lidarCount > 0) {
-        setUniforms(_uniformBuffer, _uniformCursor, enc, viewProjection, identityMatrix(), 5.0f);
+        setUniforms(enc, viewProjection, identityMatrix(), 2.0f);
         [enc setVertexBuffer:lidarBuffer offset:0 atIndex:0];
         [enc drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:lidarCount];
     }
     if (radarBuffer && radarCount > 0) {
-        setUniforms(_uniformBuffer, _uniformCursor, enc, viewProjection, identityMatrix(), 8.0f);
+        setUniforms(enc, viewProjection, identityMatrix(), 8.0f);
         [enc setVertexBuffer:radarBuffer offset:0 atIndex:0];
         [enc drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:radarCount];
     }
@@ -1258,7 +1270,7 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
                       triangleBuffer:(id<MTLBuffer>)triangleBuffer
                        triangleCount:(NSUInteger)triangleCount
                  skipSelectedDrone:(BOOL)skipSelectedDrone {
-    setUniforms(_uniformBuffer, _uniformCursor, enc, viewProjection, identityMatrix());
+    setUniforms(enc, viewProjection, identityMatrix());
     _terrainMesh.draw(enc);
     _cityMesh.draw(enc);
     if (triangleBuffer && triangleCount > 0) {
@@ -1268,7 +1280,7 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
     if (_droneModel.loaded()) {
         for (std::size_t i = 0; i < _sim.drones().size(); ++i) {
             if (skipSelectedDrone && i == _selectedDrone) continue;
-            drawDroneModel(_uniformBuffer, _uniformCursor, enc, _droneModel, _sim.drones()[i], _propAngle, viewProjection);
+            drawDroneModel(enc, _droneModel, _sim.drones()[i], _propAngle, viewProjection);
         }
     }
 }
@@ -1502,7 +1514,6 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
     [enc setViewport:viewport];
     [enc setScissorRect:scissor];
 
-    _uniformCursor = 0;
     matrix_float4x4 projection = makePerspective(glm::radians(cfg.cameraFov),
                                                  static_cast<float>(cfg.cameraWidth) / static_cast<float>(std::max(1u, cfg.cameraHeight)),
                                                  0.05f,
@@ -1522,12 +1533,12 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
 
     [enc setDepthStencilState:_overlayDepthState];
     if (lidarBuffer && lidarCount > 0) {
-        setUniforms(_uniformBuffer, _uniformCursor, enc, viewProjection, identityMatrix(), 2.5f);
+        setUniforms(enc, viewProjection, identityMatrix(), 1.0f);
         [enc setVertexBuffer:lidarBuffer offset:0 atIndex:0];
         [enc drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:lidarCount];
     }
     if (radarBuffer && radarCount > 0) {
-        setUniforms(_uniformBuffer, _uniformCursor, enc, viewProjection, identityMatrix(), 4.0f);
+        setUniforms(enc, viewProjection, identityMatrix(), 4.0f);
         [enc setVertexBuffer:radarBuffer offset:0 atIndex:0];
         [enc drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:radarCount];
     }
@@ -1550,6 +1561,8 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
         _lidarAccumulator = 0.0f;
         _lidarPointVertices.clear();
         _lastLidarHits.clear();
+        _lidarBuffer = nil;
+        ++_lidarGeneration;
         std::cout << "LiDAR: " << (_lidarEnabled ? "ON" : "OFF") << "\n";
     }
     if (code == 15 && !event.isARepeat) { // R
@@ -1561,6 +1574,7 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
     }
     if (code == 3 && !event.isARepeat) { // F
         bool goingFree = _followDrone || _onboardCamera;
+        [self resetInput];
         if (goingFree) [self captureCurrentViewAsFreeCamera];
         _followDrone = !goingFree;
         if (goingFree) _onboardCamera = false;
@@ -1584,9 +1598,17 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
         _selectedDrone = std::min(_selectedDrone, _sim.drones().size() - 1);
         bool manual = !_sim.droneManual(_selectedDrone);
         _sim.setDroneManual(_selectedDrone, manual);
+        if (manual) _followDrone = true;
         std::cout << "Manual " << _sim.drones()[_selectedDrone].name << ": " << (manual ? "ON" : "OFF") << "\n";
     }
     if (code == 48 && !event.isARepeat && !_sim.drones().empty()) { // Tab
+        [self resetInput];
+        ++_lidarGeneration;
+        _lastLidarHits.clear();
+        _lidarPointVertices.clear();
+        _lidarBuffer = nil;
+        _lastRadarDetections.clear();
+        _radarPointVertices.clear();
         _selectedDrone = (_selectedDrone + 1) % _sim.drones().size();
         std::cout << "Selected drone: " << _sim.drones()[_selectedDrone].name
                   << " (" << (_selectedDrone + 1) << "/" << _sim.drones().size() << ")"
@@ -1597,6 +1619,17 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
 - (void)handleKeyUp:(NSEvent*)event {
     unsigned short code = event.keyCode;
     if (code < _keys.size()) _keys[code] = false;
+}
+
+- (void)resetInput {
+    _keys.fill(false);
+    _sim.manualControlDrone(_selectedDrone, 0, 0, 0, 0, 0.001f);
+}
+
+- (void)handleMouseDragged:(NSEvent*)event {
+    if (_onboardCamera) return;
+    _cameraYaw += static_cast<float>(event.deltaX) * 0.004f;
+    _cameraPitch = std::clamp(_cameraPitch - static_cast<float>(event.deltaY) * 0.004f, -1.35f, 1.15f);
 }
 
 - (void)updateManualDrone:(float)dt {
@@ -1680,16 +1713,9 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
         const auto& cfg = _sim.sensors();
         float period = 1.0f / std::max(cfg.lidarFps, 0.1f);
         _lidarAccumulator += dt;
-        if (_lidarPointVertices.empty() || _lidarAccumulator >= period) {
-            _lidarAccumulator = std::fmod(_lidarAccumulator, period);
-            _selectedDrone = std::min(_selectedDrone, _sim.drones().size() - 1);
-            _lastLidarHits = simulateLidarScene(_sensorGeometry,
-                                                _droneSensorModel,
-                                                _sim.drones(),
-                                                _selectedDrone,
-                                                _propAngle,
-                                                cfg);
-            writeLidarFrameYaml(cfg.lidarOutputDir, _lidarFrameId++, _lastLidarHits, cfg);
+        if (_lidarTask.valid() && _lidarTask.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            auto hits = _lidarTask.get();
+            if (_lidarTaskGeneration == _lidarGeneration) _lastLidarHits = std::move(hits);
             _lidarPointVertices.clear();
             _lidarPointVertices.reserve(_lastLidarHits.size());
             for (const auto& hit : _lastLidarHits) {
@@ -1699,6 +1725,24 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
                 vector_float3 color = dynamicDroneHit ? vector_float3{0.05f, 0.85f, 1.0f} : vector_float3{1.0f, 0.05f, 0.02f};
                 _lidarPointVertices.push_back({vector_float3{p.x, p.y, p.z}, color});
             }
+            _lidarBuffer = makeMetalBuffer(_device, _lidarPointVertices);
+        }
+        if (!_lidarTask.valid() && (_lastLidarHits.empty() || _lidarAccumulator >= period)) {
+            _lidarAccumulator = 0.0f;
+            _selectedDrone = std::min(_selectedDrone, _sim.drones().size() - 1);
+            _lidarTaskGeneration = _lidarGeneration;
+            // Only one scan can be in flight. Snapshot poses instead of reading live drones.
+            auto* geometry = &_sensorGeometry;
+            auto* droneGeometry = &_droneSensorModel;
+            auto drones = _sim.drones();
+            auto index = _selectedDrone;
+            float propAngle = _propAngle;
+            int frameId = _lidarFrameId++;
+            _lidarTask = std::async(std::launch::async, [geometry, droneGeometry, drones = std::move(drones), index, propAngle, cfg, frameId] {
+                auto hits = simulateLidarScene(*geometry, *droneGeometry, drones, index, propAngle, cfg);
+                writeLidarFrameYaml(cfg.lidarOutputDir, frameId, hits, cfg);
+                return hits;
+            });
         }
     } else if (!_lidarPointVertices.empty() || !_lastLidarHits.empty()) {
         _lidarPointVertices.clear();
@@ -1709,7 +1753,7 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
         const auto& cfg = _sim.sensors();
         float period = 1.0f / std::max(cfg.radarFps, 0.1f);
         _radarAccumulator += dt;
-        if (_radarPointVertices.empty() || _radarAccumulator >= period) {
+        if (_radarAccumulator >= period) {
             _radarAccumulator = std::fmod(_radarAccumulator, period);
             _selectedDrone = std::min(_selectedDrone, _sim.drones().size() - 1);
             _lastRadarDetections = simulateRadarScene(_sensorGeometry,
@@ -1759,7 +1803,7 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
     matrix_float4x4 viewProjection = matrix_multiply(projection, viewMatrix);
 
     id<MTLBuffer> triangleBuffer = makeMetalBuffer(_device, triangleVertices);
-    id<MTLBuffer> lidarBuffer = makeMetalBuffer(_device, _lidarPointVertices);
+    id<MTLBuffer> lidarBuffer = _lidarBuffer;
     id<MTLBuffer> radarBuffer = makeMetalBuffer(_device, _radarPointVertices);
     NSUInteger triangleCount = static_cast<NSUInteger>(triangleVertices.size());
     NSUInteger lidarCount = static_cast<NSUInteger>(_lidarPointVertices.size());
@@ -1776,7 +1820,6 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
     matrix_float4x4 lightViewProjection = [self sunViewProjectionMatrix];
 
     id<MTLCommandBuffer> command = [_queue commandBuffer];
-    _uniformCursor = 0;
     [self renderShadowMapWithCommandBuffer:command
                             viewProjection:lightViewProjection
                              triangleBuffer:triangleBuffer
@@ -1888,12 +1931,12 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
 
         [insetEnc setDepthStencilState:_overlayDepthState];
         if (lidarBuffer && lidarCount > 0) {
-            setUniforms(_uniformBuffer, _uniformCursor, insetEnc, insetViewProjection, identityMatrix(), 2.5f);
+            setUniforms(insetEnc, insetViewProjection, identityMatrix(), 1.0f);
             [insetEnc setVertexBuffer:lidarBuffer offset:0 atIndex:0];
             [insetEnc drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:lidarCount];
         }
         if (radarBuffer && radarCount > 0) {
-            setUniforms(_uniformBuffer, _uniformCursor, insetEnc, insetViewProjection, identityMatrix(), 4.0f);
+            setUniforms(insetEnc, insetViewProjection, identityMatrix(), 4.0f);
             [insetEnc setVertexBuffer:radarBuffer offset:0 atIndex:0];
             [insetEnc drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:radarCount];
         }

@@ -29,7 +29,7 @@ add_executable(UAM-Simulator-Modern
     src/metal/MetalMesh.mm
 )
 
-set_source_files_properties(src/main.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+set_source_files_properties(src/main.mm src/metal/MetalMesh.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 target_include_directories(UAM-Simulator-Modern PRIVATE
     include
@@ -46,3 +46,13 @@ target_link_libraries(UAM-Simulator-Modern PRIVATE
 )
 
 target_compile_options(UAM-Simulator-Modern PRIVATE -Wall -Wextra -Wpedantic)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(core_regressions tests/core_regressions.cpp
+        src/core/SensorGeometry.cpp src/core/SimulatorCore.cpp)
+    target_include_directories(core_regressions PRIVATE src)
+    target_link_libraries(core_regressions PRIVATE yaml-cpp::yaml-cpp glm::glm)
+    add_test(NAME core_regressions COMMAND core_regressions)
+    set_tests_properties(core_regressions PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+endif()
