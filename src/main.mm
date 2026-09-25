@@ -4,6 +4,7 @@
 #import <QuartzCore/QuartzCore.h>
 
 #include "core/SimulatorCore.hpp"
+#include "core/GeoReference.hpp"
 #include "core/SceneMesh.hpp"
 #include "core/SensorGeometry.hpp"
 #include "metal/MetalMesh.hpp"
@@ -68,10 +69,25 @@ static bool ensureOutputDir(const std::string& outputDir, const char* label) {
     return true;
 }
 
+static void writeCoordinateReference(std::ostream& out, const uam::GeoReference& reference, const uam::Drone& drone) {
+    out << std::setprecision(12);
+    out << "coordinate_frame: local_west_up_north_metres\n";
+    out << "sensor_position: [" << drone.position.x << ", " << drone.position.y << ", " << drone.position.z << "]\n";
+    out << "sensor_yaw_deg: " << drone.yawDeg << "\n";
+    if (reference.valid) {
+        out << "horizontal_crs: EPSG:25832\n";
+        out << "origin_easting: " << reference.origin.x << "\norigin_northing: " << reference.origin.y
+            << "\norigin_height: " << reference.origin.z << "\n";
+        out << "height_reference: source_citygml_assumed_NHN\n";
+    }
+}
+
 static void writeLidarFrameYaml(const std::string& outputDir,
                                 int frameId,
                                 const std::vector<uam::LidarHit>& hits,
-                                const uam::SensorConfig& cfg) {
+                                const uam::SensorConfig& cfg,
+                                const uam::GeoReference& reference,
+                                const uam::Drone& drone) {
     if (hits.empty() || !ensureOutputDir(outputDir, "LiDAR")) return;
 
     std::ostringstream filename;
@@ -83,6 +99,7 @@ static void writeLidarFrameYaml(const std::string& outputDir,
     }
 
     auto hitCount = std::count_if(hits.begin(), hits.end(), [](const uam::LidarHit& h) { return h.hit; });
+    writeCoordinateReference(out, reference, drone);
     out << "timestamp: " << timestampString() << "\n";
     out << "frame_id: " << frameId << "\n";
     out << "hit_count: " << hitCount << "\n";
@@ -121,7 +138,9 @@ static void writeLidarFrameYaml(const std::string& outputDir,
 static void writeRadarFrameYaml(const std::string& outputDir,
                                 int frameId,
                                 const std::vector<RadarDetection>& detections,
-                                const uam::SensorConfig& cfg) {
+                                const uam::SensorConfig& cfg,
+                                const uam::GeoReference& reference,
+                                const uam::Drone& drone) {
     if (detections.empty() || !ensureOutputDir(outputDir, "RADAR")) return;
 
     std::ostringstream filename;
@@ -133,6 +152,7 @@ static void writeRadarFrameYaml(const std::string& outputDir,
     }
 
     auto hitCount = std::count_if(detections.begin(), detections.end(), [](const RadarDetection& d) { return d.hit; });
+    writeCoordinateReference(out, reference, drone);
     out << "timestamp: " << timestampString() << "\n";
     out << "frame_id: " << frameId << "\n";
     out << "hit_count: " << hitCount << "\n";
@@ -741,6 +761,7 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
 - (void)handleKeyDown:(NSEvent*)event;
 - (void)handleKeyUp:(NSEvent*)event;
 - (void)handleMouseDragged:(NSEvent*)event;
+- (BOOL)handleMouseEvent:(NSEvent*)event inView:(MTKView*)view;
 - (void)resetInput;
 @end
 
@@ -766,6 +787,7 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
     DroneRenderModel _droneModel;
     DroneSensorModel _droneSensorModel;
     uam::SensorGeometry _sensorGeometry;
+    uam::GeoReference _geoReference;
     std::size_t _selectedDrone;
     bool _onboardCamera;
     bool _insetCameraEnabled;
@@ -797,6 +819,7 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
     id _mouseMonitor;
     id _focusObserver;
     std::array<bool, 256> _keys;
+    std::array<bool, 2> _cameraDragButtons;
     bool _followDrone;
     vector_float3 _cameraPos;
     float _cameraYaw;
@@ -847,6 +870,7 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
     _hudLabel = nil;
     _hudFps = 0.0f;
     _keys.fill(false);
+    _cameraDragButtons.fill(false);
     _selectedDrone = 0;
     _onboardCamera = false;
     _insetCameraEnabled = true;
@@ -1056,18 +1080,24 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
         std::cout << "Uploaded city mesh to Metal: " << _cityMesh.vertexCount() / 3 << " triangles\n";
     }
 
-    uam::SceneMesh importedGroundMesh = uam::loadObjSceneMesh("map/surface_ground.obj", glm::vec3(0.20f, 0.45f, 0.25f), true);
-    if (importedGroundMesh.hasBounds && cityMesh.hasBounds) {
-        float importedArea = (importedGroundMesh.boundsMax.x - importedGroundMesh.boundsMin.x) *
-                             (importedGroundMesh.boundsMax.z - importedGroundMesh.boundsMin.z);
-        float cityArea = (cityMesh.boundsMax.x - cityMesh.boundsMin.x) *
-                         (cityMesh.boundsMax.z - cityMesh.boundsMin.z);
-        std::cout << "Imported ground footprint covers about "
-                  << (cityArea > 1e-3f ? (100.0f * importedArea / cityArea) : 0.0f)
-                  << "% of city bounds; using generated fill mesh for full footprint\n";
+    _geoReference.load("map/hh_clip.georef.json");
+    uam::GeoReference terrainReference;
+    uam::SceneMesh terrainMesh;
+    if (terrainReference.load("map/terrain.georef.json") && _geoReference.matches(terrainReference)) {
+        terrainMesh = uam::loadObjSceneMesh("map/terrain.obj", glm::vec3(1.0f), true);
+        if (terrainMesh.hasBounds && cityMesh.hasBounds &&
+            (terrainMesh.boundsMin.x > cityMesh.boundsMin.x || terrainMesh.boundsMax.x < cityMesh.boundsMax.x ||
+             terrainMesh.boundsMin.z > cityMesh.boundsMin.z || terrainMesh.boundsMax.z < cityMesh.boundsMax.z)) {
+            std::cerr << "Terrain does not cover city bounds; using fallback ground\n";
+            terrainMesh = {};
+        }
     }
-
-    uam::SceneMesh terrainMesh = makeGroundFillMesh(cityMesh);
+    if (terrainMesh.vertices.empty()) {
+        std::cerr << "No aligned DGM terrain available; using synthetic fill ground\n";
+        terrainMesh = makeGroundFillMesh(cityMesh);
+    } else {
+        std::cout << "Loaded georeferenced DGM terrain (EPSG:25832)\n";
+    }
     if (_terrainMesh.upload(_device, terrainMesh)) {
         std::cout << "Uploaded terrain mesh to Metal: " << _terrainMesh.vertexCount() / 3 << " triangles\n";
     }
@@ -1112,15 +1142,9 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
         [weakSelf handleKeyUp:event];
         return nil;
     }];
-    _mouseMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:(NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskLeftMouseDragged | NSEventMaskRightMouseDragged)
+    _mouseMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:(NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp | NSEventMaskLeftMouseDragged | NSEventMaskRightMouseDragged)
                                                        handler:^NSEvent*(NSEvent* event) {
-        if (event.window != view.window || !event.window.isKeyWindow) return event;
-        [view.window makeFirstResponder:view];
-        if (event.type == NSEventTypeLeftMouseDragged || event.type == NSEventTypeRightMouseDragged) {
-            [weakSelf handleMouseDragged:event];
-            return nil;
-        }
-        return event;
+        return [weakSelf handleMouseEvent:event inView:view] ? nil : event;
     }];
     _focusObserver = [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidResignKeyNotification
                                                                       object:nil queue:nil usingBlock:^(NSNotification* note) {
@@ -1259,7 +1283,7 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
         [enc drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:lidarCount];
     }
     if (radarBuffer && radarCount > 0) {
-        setUniforms(enc, viewProjection, identityMatrix(), 8.0f);
+        setUniforms(enc, viewProjection, identityMatrix(), 3.0f);
         [enc setVertexBuffer:radarBuffer offset:0 atIndex:0];
         [enc drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:radarCount];
     }
@@ -1323,7 +1347,7 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
 
     NSRect bounds = view.bounds;
     CGFloat width = 420.0;
-    CGFloat height = 154.0;
+    CGFloat height = _geoReference.valid ? 200.0 : 154.0;
     [_hudLabel setFrame:NSMakeRect(14.0, bounds.size.height - height - 14.0, width, height)];
 
     std::ostringstream ss;
@@ -1351,6 +1375,11 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
            << "  |v| " << speed << "\n";
         ss << std::setprecision(1);
         ss << "Yaw  " << drone.yawDeg << " deg";
+        if (_geoReference.valid) {
+            auto projected = _geoReference.toProjected(glm::dvec3(drone.position));
+            ss << "\nUTM32 E " << projected.x << "  N " << projected.y
+               << "\nH " << projected.z << " m (source)  X west / Y up / Z north";
+        }
     }
 
     [_hudLabel setStringValue:[NSString stringWithUTF8String:ss.str().c_str()]];
@@ -1538,7 +1567,7 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
         [enc drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:lidarCount];
     }
     if (radarBuffer && radarCount > 0) {
-        setUniforms(enc, viewProjection, identityMatrix(), 4.0f);
+        setUniforms(enc, viewProjection, identityMatrix(), 1.5f);
         [enc setVertexBuffer:radarBuffer offset:0 atIndex:0];
         [enc drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:radarCount];
     }
@@ -1623,7 +1652,31 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
 
 - (void)resetInput {
     _keys.fill(false);
+    _cameraDragButtons.fill(false);
     _sim.manualControlDrone(_selectedDrone, 0, 0, 0, 0, 0.001f);
+}
+
+- (BOOL)handleMouseEvent:(NSEvent*)event inView:(MTKView*)view {
+    NSInteger button = event.buttonNumber;
+    if (button < 0 || button >= static_cast<NSInteger>(_cameraDragButtons.size())) return NO;
+    if (event.type == NSEventTypeLeftMouseUp || event.type == NSEventTypeRightMouseUp) {
+        _cameraDragButtons[button] = false;
+        return NO;
+    }
+    bool inScene = event.window == view.window && event.window.isKeyWindow &&
+        NSPointInRect(event.locationInWindow, view.window.contentLayoutRect) &&
+        NSPointInRect([view convertPoint:event.locationInWindow fromView:nil], view.visibleRect);
+    if (event.type == NSEventTypeLeftMouseDown || event.type == NSEventTypeRightMouseDown) {
+        // A title-bar drag must never become a camera gesture, even if it crosses the scene.
+        _cameraDragButtons[button] = inScene;
+        if (inScene) [view.window makeFirstResponder:view];
+        return NO;
+    }
+    if (_cameraDragButtons[button] && inScene) {
+        [self handleMouseDragged:event];
+        return YES;
+    }
+    return NO;
 }
 
 - (void)handleMouseDragged:(NSEvent*)event {
@@ -1738,9 +1791,10 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
             auto index = _selectedDrone;
             float propAngle = _propAngle;
             int frameId = _lidarFrameId++;
-            _lidarTask = std::async(std::launch::async, [geometry, droneGeometry, drones = std::move(drones), index, propAngle, cfg, frameId] {
+            auto reference = _geoReference;
+            _lidarTask = std::async(std::launch::async, [geometry, droneGeometry, drones = std::move(drones), index, propAngle, cfg, frameId, reference] {
                 auto hits = simulateLidarScene(*geometry, *droneGeometry, drones, index, propAngle, cfg);
-                writeLidarFrameYaml(cfg.lidarOutputDir, frameId, hits, cfg);
+                writeLidarFrameYaml(cfg.lidarOutputDir, frameId, hits, cfg, reference, drones[index]);
                 return hits;
             });
         }
@@ -1762,7 +1816,7 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
                                                       _selectedDrone,
                                                       _propAngle,
                                                       cfg);
-            writeRadarFrameYaml(cfg.radarOutputDir, _radarFrameId++, _lastRadarDetections, cfg);
+            writeRadarFrameYaml(cfg.radarOutputDir, _radarFrameId++, _lastRadarDetections, cfg, _geoReference, _sim.drones()[_selectedDrone]);
             _radarPointVertices.clear();
             _radarPointVertices.reserve(_lastRadarDetections.size());
             for (const auto& det : _lastRadarDetections) {
@@ -1936,7 +1990,7 @@ static std::vector<RadarDetection> simulateRadarScene(const uam::SensorGeometry&
             [insetEnc drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:lidarCount];
         }
         if (radarBuffer && radarCount > 0) {
-            setUniforms(insetEnc, insetViewProjection, identityMatrix(), 4.0f);
+            setUniforms(insetEnc, insetViewProjection, identityMatrix(), 1.5f);
             [insetEnc setVertexBuffer:radarBuffer offset:0 atIndex:0];
             [insetEnc drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:radarCount];
         }

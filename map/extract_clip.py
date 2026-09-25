@@ -1,6 +1,8 @@
 import re
 import math
 import argparse
+import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 def main():
@@ -25,6 +27,7 @@ def main():
         action="store_true",
         help="Export the full tile envelope instead of a centered clip window",
     )
+    parser.add_argument("--metadata-only", action="store_true", help="Write the coordinate sidecar without rewriting OBJ/MTL")
     args = parser.parse_args()
 
     gml_path = Path(args.gml)
@@ -142,6 +145,33 @@ def main():
         minH = min(ground_heights)
     else:
         minH = min(p[2] for _, poly in rings for p in poly)
+
+    envelope = ET.fromstring(text).find(".//{http://www.opengis.net/gml}Envelope")
+    crs = envelope.attrib.get("srsName", "") if envelope is not None else ""
+    if crs.lower() != "epsg:25832":
+        raise SystemExit("Unsupported source CRS: " + crs)
+    metadata = {
+        "horizontal_crs": "EPSG:25832",
+        "vertical_crs": "source CityGML height; NHN assumed, not encoded in GML",
+        "origin_easting": centerE, "origin_northing": centerN, "origin_height": minH,
+        "bounds_utm": [minE, minN, maxE, maxN],
+        "obj_axes": ["east", "up", "north"],
+        "runtime_axes": ["west", "up", "north"],
+        "source": str(gml_path),
+    }
+    if args.metadata_only:
+        # Refuse to attach an origin to an OBJ exported with a different clip setting.
+        with default_obj.open() as existing:
+            existing.readline()
+            header = existing.readline().split()
+        if len(header) != 7 or header[1::2] != ["centerE", "centerN", "half"] or any(
+            abs(float(header[i]) - value) > 1e-6 for i, value in zip((2, 4, 6), (centerE, centerN, half))
+        ):
+            raise SystemExit("Existing OBJ origin does not match; regenerate the OBJ with these options")
+    default_obj.with_suffix(".georef.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    if args.metadata_only:
+        print("Wrote coordinate metadata", metadata)
+        return
 
     # build materials for textures
     images = {}

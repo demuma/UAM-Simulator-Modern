@@ -1,5 +1,6 @@
 #include "core/SensorGeometry.hpp"
 #include "core/SimulatorCore.hpp"
+#include "core/GeoReference.hpp"
 
 #include <cmath>
 #include <future>
@@ -12,6 +13,18 @@ static void require(bool value, const char* message) {
 
 int main() {
     try {
+        uam::GeoReference reference;
+        reference.valid = true;
+        reference.origin = {567488.2015, 5934619.782, 1.917};
+        glm::dvec3 local(12.0, 85.0, -23.0);
+        auto projected = reference.toProjected(local);
+        require(std::abs(projected.x - 567476.2015) < 1e-6, "Runtime X points west");
+        require(std::abs(projected.y - 5934596.782) < 1e-6, "Runtime Z points north");
+        require(std::abs(projected.z - 86.917) < 1e-6, "Height offset must be restored");
+        require(glm::length(reference.toLocal(projected) - local) < 1e-6, "Coordinate round trip");
+        auto other = reference;
+        other.origin.z += 1;
+        require(!reference.matches(other), "Different terrain height origins must be rejected");
         uam::SceneMesh mesh;
         mesh.vertices = {{{0, 0, 0}}, {{10, 0, 0}}, {{0, 0, 10}}};
         uam::SensorGeometry geometry;

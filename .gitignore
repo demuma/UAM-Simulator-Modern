@@ -10,3 +10,10 @@ map/LoD3-HH_Area*/
 map/**/images_upscaled_x*/
 map/tile006-006-3dtiles/
 map/_analyze/
+map/dgm/
+map/terrain.obj
+map/terrain.mtl
+map/terrain_map.png
+map/terrain.georef.json
+map/hh_clip.georef.json
+__pycache__/
